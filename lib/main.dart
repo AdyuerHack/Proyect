@@ -1,10 +1,52 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:proyect/services/gemini_service.dart';
+import 'package:logger/logger.dart';
 
-void main() {
-  runApp(JobSwipeApp());
+var logger = Logger();
+
+// Modelo para representar una vacante
+class Job {
+  final String title;
+  final String company;
+  final String description;
+  final String location;
+
+  // *** CONSTRUCTOR CORREGIDO AQUÍ ***
+  const Job({ // Añade 'const' aquí
+    required this.title,
+    required this.company,
+    required this.description,
+    required this.location,
+  });
 }
 
-class JobSwipeApp extends StatelessWidget {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  try {
+    final String configString = await rootBundle.loadString('assets/config.json');
+    final Map<String, dynamic> config = jsonDecode(configString);
+    final apiKey = config['GEMINI_API_KEY'];
+
+    if (apiKey == null || apiKey.isEmpty) {
+      logger.e('Error: La clave API de Gemini no está configurada en config.json');
+      return;
+    }
+
+    runApp(MyApp(geminiService: GeminiService(apiKey: apiKey)));
+  } catch (e) {
+    logger.e('Error al cargar config.json: $e');
+    return;
+  }
+}
+
+class MyApp extends StatelessWidget {
+  final GeminiService geminiService;
+
+  const MyApp({super.key, required this.geminiService});
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -17,15 +59,19 @@ class JobSwipeApp extends StatelessWidget {
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         ),
       ),
-      home: LoginScreen(),
+      home: LoginScreen(geminiService: geminiService),
     );
   }
 }
 
-// ### Pantalla de Inicio de Sesión (Autenticación)
+//Login Screen
 class LoginScreen extends StatefulWidget {
+  final GeminiService geminiService;
+
+  const LoginScreen({super.key, required this.geminiService});
+
   @override
-  _LoginScreenState createState() => _LoginScreenState();
+  State<LoginScreen> createState() => _LoginScreenState();
 }
 
 class _LoginScreenState extends State<LoginScreen> {
@@ -46,12 +92,12 @@ class _LoginScreenState extends State<LoginScreen> {
         );
         return;
       }
-      // Simulación de autenticación/registro
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
           builder: (context) => JobSwipeScreen(
             userName: _isRegistering ? _nameController.text : 'Usuario',
+            geminiService: widget.geminiService,
           ),
         ),
       );
@@ -101,63 +147,133 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-// ### Pantalla Principal de Deslizamiento de Vacantes
+// Pantalla Principal de Deslizamiento de Vacantes
 class JobSwipeScreen extends StatefulWidget {
   final String userName;
+  final GeminiService geminiService;
 
-  JobSwipeScreen({required this.userName});
+  // *** CONSTRUCTOR CORREGIDO AQUÍ ***
+  const JobSwipeScreen({super.key, required this.userName, required this.geminiService}); // Añade 'const' aquí
 
   @override
   _JobSwipeScreenState createState() => _JobSwipeScreenState();
 }
 
 class _JobSwipeScreenState extends State<JobSwipeScreen> {
-  // Lista de vacantes simuladas
-  final List<Map<String, String>> jobs = [
-    {
-      'title': 'Desarrollador Flutter',
-      'company': 'TechCorp',
-      'description': 'Trabaja en apps móviles innovadoras.',
-      'location': 'Remoto',
-    },
-    {
-      'title': 'Diseñador UX/UI',
-      'company': 'DesignLabs',
-      'description': 'Crea interfaces intuitivas y atractivas.',
-      'location': 'Ciudad de México',
-    },
-    {
-      'title': 'Analista de Datos',
-      'company': 'DataWorks',
-      'description': 'Interpreta datos para tomar decisiones.',
-      'location': 'Monterrey',
-    },
+  final List<Job> jobs = [
+    const Job( // Añade const si la clase Job es const
+      title: 'Desarrollador Flutter',
+      company: 'TechCorp',
+      description: 'Trabaja en apps móviles innovadoras.',
+      location: 'Remoto',
+    ),
+    const Job( // Añade const si la clase Job es const
+      title: 'Diseñador UX/UI',
+      company: 'DesignLabs',
+      description: 'Crea interfaces intuitivas y atractivas.',
+      location: 'Ciudad de México',
+    ),
+    const Job( // Añade const si la clase Job es const
+      title: 'Analista de Datos',
+      company: 'DataWorks',
+      description: 'Interpreta datos para tomar decisiones.',
+      location: 'Monterrey',
+    ),
   ];
 
   int currentIndex = 0;
   int swipeCount = 0;
-  int points = 0; // Gamificación: puntos por interacción
-  final int questionInterval = 3; // Pregunta cada 3 deslizamientos
-  List<String> userPreferences = []; // Almacenar respuestas de profiling
+  int points = 0;
+  final int questionInterval = 3;
+  List<String> userPreferences = [];
 
+  // ignore: unused_element
   void _onDismissed(DismissDirection direction) {
+    _updatePoints(direction);
+    _updateCurrentIndex();
+
+    if (_shouldShowProfilingQuestion()) {
+      _showProfilingQuestion();
+    }
+
+    if (_shouldGetRecommendations()) {
+      _getRecommendations();
+    }
+
+    if (_shouldShowAchievement()) {
+      _showAchievement();
+    }
+  }
+
+  void _updatePoints(DismissDirection direction) {
     setState(() {
       if (direction == DismissDirection.startToEnd) {
-        print('Like: ${jobs[currentIndex]['title']}');
-        points += 10; // Gamificación: +10 puntos por like
+        logger.d('Like: ${jobs[currentIndex].title}');
+        points += 10;
       } else {
-        print('Dislike: ${jobs[currentIndex]['title']}');
-        points += 5; // Gamificación: +5 puntos por dislike
-      }
-      currentIndex = (currentIndex + 1) % jobs.length;
-      swipeCount++;
-      if (swipeCount % questionInterval == 0) {
-        _showProfilingQuestion();
-      }
-      if (points % 50 == 0 && points > 0) {
-        _showAchievement();
+        logger.d('Dislike: ${jobs[currentIndex].title}');
+        points += 5;
       }
     });
+  }
+
+  void _updateCurrentIndex() {
+    setState(() {
+      currentIndex = (currentIndex + 1) % jobs.length;
+      swipeCount++;
+    });
+  }
+
+  bool _shouldShowProfilingQuestion() {
+    return swipeCount % questionInterval == 0;
+  }
+
+  bool _shouldGetRecommendations() {
+    return swipeCount % 6 == 0 && userPreferences.isNotEmpty;
+  }
+
+  bool _shouldShowAchievement() {
+    return points % 50 == 0 && points > 0;
+  }
+
+  void _getRecommendations() async {
+    try {
+      final respuesta = await obtenerVacantes();
+      _showRecommendationDialog(respuesta);
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error al obtener recomendaciones: $e')),
+      );
+    }
+  }
+
+  Future<String> obtenerVacantes() async {
+    final prompt = construirPrompt(userPreferences);
+
+    try {
+      final respuesta = await widget.geminiService.generarRespuesta(prompt);
+      logger.i("Respuesta de la IA:\n$respuesta");
+      return respuesta;
+    } catch (e) {
+      logger.e("Error al generar respuesta de la IA: $e");
+      throw Exception('Error al generar respuesta de la IA: $e');
+    }
+  }
+
+  void _showRecommendationDialog(String respuesta) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('Recomendaciones de IA'),
+        content: SingleChildScrollView(child: Text(respuesta)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text('Cerrar'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showProfilingQuestion() {
@@ -174,7 +290,7 @@ class _JobSwipeScreenState extends State<JobSwipeScreen> {
               onSubmitted: (value) {
                 setState(() {
                   userPreferences.add(value);
-                  print('Preferencia guardada: $value');
+                  logger.d('Preferencia guardada: $value');
                 });
                 Navigator.of(context).pop();
               },
@@ -239,7 +355,7 @@ class _JobSwipeScreenState extends State<JobSwipeScreen> {
             child: Center(
               child: currentIndex < jobs.length
                   ? Dismissible(
-                key: Key(jobs[currentIndex]['title']!),
+                key: Key(jobs[currentIndex].title),
                 onDismissed: _onDismissed,
                 background: Container(
                   color: Colors.green,
@@ -251,7 +367,7 @@ class _JobSwipeScreenState extends State<JobSwipeScreen> {
                   alignment: Alignment.centerRight,
                   child: Icon(Icons.thumb_down, color: Colors.white),
                 ),
-                child: JobCard(job: jobs[currentIndex]),
+                child: JobCard(job: jobs[currentIndex], onLike: () => _onDismissed(DismissDirection.startToEnd), onDislike: () => _onDismissed(DismissDirection.endToStart)),
               )
                   : Text('No hay más vacantes por ahora.'),
             ),
@@ -262,11 +378,14 @@ class _JobSwipeScreenState extends State<JobSwipeScreen> {
   }
 }
 
-// ### Widget de Tarjeta de Vacante
+// Widget de Tarjeta de Vacante
 class JobCard extends StatelessWidget {
-  final Map<String, String> job;
+  final Job job;
+  final VoidCallback onLike;
+  final VoidCallback onDislike;
 
-  JobCard({required this.job});
+  // *** CONSTRUCTOR CORREGIDO AQUÍ ***
+  const JobCard({required this.job, required this.onLike, required this.onDislike}); // Añade 'const' aquí
 
   @override
   Widget build(BuildContext context) {
@@ -279,7 +398,7 @@ class JobCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
-            color: Colors.grey.withOpacity(0.5),
+            color: Colors.grey.withAlpha(128),
             spreadRadius: 5,
             blurRadius: 7,
             offset: Offset(0, 3),
@@ -290,23 +409,23 @@ class JobCard extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Text(
-            job['title']!,
+            job.title,
             style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
             textAlign: TextAlign.center,
           ),
           SizedBox(height: 10),
           Text(
-            job['company']!,
+            job.company,
             style: TextStyle(fontSize: 18, color: Colors.grey[700]),
           ),
           SizedBox(height: 10),
           Text(
-            'Ubicación: ${job['location']}',
+            'Ubicación: ${job.location}',
             style: TextStyle(fontSize: 16, color: Colors.grey[600]),
           ),
           SizedBox(height: 20),
           Text(
-            job['description']!,
+            job.description,
             style: TextStyle(fontSize: 16),
             textAlign: TextAlign.center,
           ),
@@ -315,22 +434,12 @@ class JobCard extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               ElevatedButton(
-                onPressed: () {
-                  // Simular deslizamiento a la izquierda
-                  Navigator.of(context).pushReplacement(
-                    MaterialPageRoute(builder: (context) => JobSwipeScreen(userName: 'Usuario')),
-                  );
-                },
+                onPressed: onDislike, // Llama a la función onDislike
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
                 child: Text('Dislike'),
               ),
               ElevatedButton(
-                onPressed: () {
-                  // Simular deslizamiento a la derecha
-                  Navigator.of(context).pushReplacement(
-                    MaterialPageRoute(builder: (context) => JobSwipeScreen(userName: 'Usuario')),
-                  );
-                },
+                onPressed: onLike, // Llama a la función onLike
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
                 child: Text('Like'),
               ),
@@ -348,7 +457,8 @@ class ProfileScreen extends StatelessWidget {
   final int points;
   final List<String> preferences;
 
-  ProfileScreen({required this.userName, required this.points, required this.preferences});
+  // *** CONSTRUCTOR CORREGIDO AQUÍ ***
+  const ProfileScreen({required this.userName, required this.points, required this.preferences}); // Añade 'const' aquí
 
   @override
   Widget build(BuildContext context) {
@@ -379,8 +489,11 @@ class ProfileScreen extends StatelessWidget {
 
 // ### Pantalla para Empresas
 class CompanyScreen extends StatefulWidget {
+  // *** CONSTRUCTOR CORREGIDO AQUÍ ***
+  const CompanyScreen({super.key}); // Añade 'const' aquí, y 'super.key' si no tenía un constructor explícito
+
   @override
-  _CompanyScreenState createState() => _CompanyScreenState();
+  State<CompanyScreen> createState() => _CompanyScreenState();
 }
 
 class _CompanyScreenState extends State<CompanyScreen> {
@@ -394,7 +507,7 @@ class _CompanyScreenState extends State<CompanyScreen> {
         _companyController.text.isNotEmpty &&
         _descriptionController.text.isNotEmpty &&
         _locationController.text.isNotEmpty) {
-      print('Vacante publicada: ${_titleController.text}');
+      logger.i('Vacante publicada: ${_titleController.text}');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Vacante publicada con éxito')),
       );
@@ -439,5 +552,73 @@ class _CompanyScreenState extends State<CompanyScreen> {
         ),
       ),
     );
+  }
+}
+
+//Funcion para llamar a la IA
+
+// Mapa estructura del perfil del usuario
+Map<String, int> userPreferences = {
+  "Remoto": 0,
+  "Presencial": 0,
+  "Diseño UX": 0,
+  "Ventas": 0,
+  "Startups": 0,
+  "Salario alto": 0,
+};
+
+// Funcion para actualizar puntos
+void updatePreference(String categoria, int puntos) {
+  if (userPreferences.containsKey(categoria)) {
+    userPreferences[categoria] = userPreferences[categoria]! + puntos;
+  } else {
+    userPreferences[categoria] = puntos;
+  }
+}
+
+// Construye prompt para la IA
+String construirPrompt(List<String> preferencias) {
+  String prompt = "Eres un recomendador inteligente de vacantes laborales. Basándote en las siguientes preferencias del usuario:\n";
+
+  if (preferencias.isNotEmpty) {
+    prompt += preferencias.map((pref) => "- $pref\n").join();
+  } else {
+    prompt += "El usuario aún no ha proporcionado preferencias.\n";
+  }
+
+  prompt += "Sugiere 3 vacantes ideales y 1 pregunta nueva para seguir entendiendo mejor sus gustos.  Formatea la respuesta de la siguiente manera:\n\n";
+  prompt += "**Recomendaciones:**\n";
+  prompt += "1. [Título de la vacante] en [Nombre de la empresa] - [Descripción breve]\n";
+  prompt += "2. [Título de la vacante] en [Nombre de la empresa] - [Descripción breve]\n";
+  prompt += "3. [Título de la vacante] en [Nombre de la empresa] - [Descripción breve]\n\n";
+  prompt += "**Pregunta:** [Pregunta para refinar las preferencias]\n";
+  return prompt;
+}
+
+// Implemantacion de puntos
+class SistemaDePuntos {
+  final Map<String, int> puntos = {
+    'tecnología': 0,
+    'datos': 0,
+    'diseño': 0,
+    'marketing': 0,
+    'administración': 0,
+  };
+
+  void like(String categoria) {
+    puntos[categoria] = (puntos[categoria] ?? 0) + 1;
+  }
+
+  void dislike(String categoria) {
+    puntos[categoria] = (puntos[categoria] ?? 0) - 1;
+  }
+
+  String generarPrompt() {
+    final buffer = StringBuffer("Soy un usuario que busca trabajo. Estas son mis preferencias:\n");
+    puntos.forEach((categoria, valor) {
+      buffer.writeln("- $categoria: $valor");
+    });
+    buffer.writeln("Sugiere 3 vacantes que se alineen a estas preferencias, con nombre y descripción breve.");
+    return buffer.toString();
   }
 }
